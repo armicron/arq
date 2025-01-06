@@ -187,6 +187,7 @@ class Worker:
         self,
         functions: Sequence[Union[Function, 'WorkerCoroutine']] = (),
         *,
+        distribution_index: int = None,
         queue_name: Optional[str] = default_queue_name,
         cron_jobs: Optional[Sequence[CronJob]] = None,
         redis_settings: Optional[RedisSettings] = None,
@@ -224,6 +225,10 @@ class Worker:
                 queue_name = redis_pool.default_queue_name
             else:
                 raise ValueError('If queue_name is absent, redis_pool must be present.')
+
+        if distribution_index is not None:
+            queue_name = f'{queue_name}_{distribution_index}'
+
         self.queue_name = queue_name
         self.cron_jobs: List[CronJob] = []
         if cron_jobs is not None:

@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import logging
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from operator import attrgetter
@@ -85,6 +86,9 @@ if TYPE_CHECKING:
 else:
     BaseRedis = Redis
 
+enqueued_jobs = 0
+
+
 
 class ArqRedis(BaseRedis):
     """
@@ -126,6 +130,7 @@ class ArqRedis(BaseRedis):
         _defer_by: Union[None, int, float, timedelta] = None,
         _expires: Union[None, int, float, timedelta] = None,
         _job_try: Optional[int] = None,
+        distribution: str = None,  # example 5:2
         **kwargs: Any,
     ) -> Optional[Job]:
         """
@@ -143,8 +148,18 @@ class ArqRedis(BaseRedis):
         :param kwargs: any keyword arguments to pass to the function
         :return: :class:`arq.jobs.Job` instance or ``None`` if a job with this ID already exists
         """
+        global enqueued_jobs
+
         if _queue_name is None:
             _queue_name = self.default_queue_name
+
+        if distribution:
+            queue_index = self._get_queue_index(distribution)
+            _queue_name = f'{_queue_name}_{queue_index}'
+            if enqueued_jobs >= sys.maxsize:
+                enqueued_jobs = 0
+            enqueued_jobs += 1
+
         job_id = _job_id or uuid4().hex
         job_key = job_key_prefix + job_id
         if _defer_until and _defer_by:
@@ -179,6 +194,20 @@ class ArqRedis(BaseRedis):
                 # job got enqueued since we checked 'job_exists'
                 return None
         return Job(job_id, redis=self, _queue_name=_queue_name, _deserializer=self.job_deserializer)
+
+    def _get_queue_index(self, distribution) -> int:
+        ratios = list(map(lambda x: int(x), distribution.split(':')))
+        ratios_sum = sum(ratios)
+        up_to_ratio = ratios[0]
+        queue_index = 0
+        for i, _ in enumerate(ratios, 1):
+            if enqueued_jobs % ratios_sum >= up_to_ratio:
+                up_to_ratio = up_to_ratio + ratios[i]
+                queue_index = i
+            else:
+                break
+
+        return queue_index
 
     async def _get_job_result(self, key: bytes) -> JobResult:
         job_id = key[len(result_key_prefix) :].decode()
